@@ -25,3 +25,25 @@ Supported flags:
 - `--debug`: Enable debug output
 
 The tool automatically extracts `.tar.gz`, `.tgz`, and `.zip` archives. Other files are saved as-is. Output file paths are printed to stdout.
+
+
+While this application can be used as a command line application, one of its uses is as a docker layer for downloading application dependencies.
+
+```
+# Stage 1: fetch the release asset with ghrelgrab 
+FROM ghcr.io/unitvectory-labs/ghrelgrab:latest AS fetcher
+WORKDIR /work
+
+RUN ["/ghrelgrab","--repo","owner/repo","--version","v1.2.3","--file","asset-{version}-{os}-{arch}.tar.gz","--out","/work","--arch-map","x86_64=amd64,aarch64=arm64","--debug"]
+
+# Stage 2: your runtime
+FROM ghcr.io/unitvectory-labs/adk-docker-base:latest
+
+# If the tar extracts a file named `asset` at /work,
+# copy it from there. Adjust the path if the archive has a subdir.
+COPY --from=fetcher /work/asset /usr/local/bin/asset
+
+WORKDIR /app
+
+# the rest goes here...
+```
