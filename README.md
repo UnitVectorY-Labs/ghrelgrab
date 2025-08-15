@@ -37,7 +37,7 @@ WORKDIR /work
 RUN ["/ghrelgrab","--repo","owner/repo","--version","v1.2.3","--file","asset-{version}-{os}-{arch}.tar.gz","--out","/work","--arch-map","x86_64=amd64,aarch64=arm64","--debug"]
 
 # Stage 2: your runtime
-FROM ghcr.io/unitvectory-labs/adk-docker-base:latest
+FROM gcr.io/distroless/base-debian12
 
 # If the tar extracts a file named `asset` at /work,
 # copy it from there. Adjust the path if the archive has a subdir.
