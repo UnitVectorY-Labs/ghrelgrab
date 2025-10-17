@@ -1,3 +1,3 @@
 module github.com/UnitVectorY-Labs/ghrelgrab
 
-go 1.25.2 // GOVERSION
+go 1.25.3 // GOVERSION
