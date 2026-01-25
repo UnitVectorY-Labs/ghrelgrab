@@ -18,7 +18,7 @@ ENV CGO_ENABLED=0
 RUN go build -mod=readonly -o ghrelgrab .
 
 # Use a minimal base image for running the compiled binary
-FROM gcr.io/distroless/base-debian12
+FROM gcr.io/distroless/base-debian13
 
 # Copy the built server binary into the runtime container
 COPY --from=builder /app/ghrelgrab /ghrelgrab
