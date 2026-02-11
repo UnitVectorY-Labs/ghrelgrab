@@ -12,11 +12,26 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 )
 
+// Version is the application version, injected at build time via ldflags
+var Version = "dev"
+
 func main() {
+	// Set the build version from the build info if not set by the build system
+	if Version == "dev" || Version == "" {
+		if bi, ok := debug.ReadBuildInfo(); ok {
+			if bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+				Version = bi.Main.Version
+			}
+		}
+	}
+
+	fmt.Println("ghrelgrab version:", Version)
+
 	repo := flag.String("repo", "", "owner/repo for GitHub project (required)")
 	version := flag.String("version", "", "release tag, e.g. v1.2.3 (required)")
 	filePattern := flag.String("file", "", "asset filename with {version} and/or {arch} tokens (required)")
