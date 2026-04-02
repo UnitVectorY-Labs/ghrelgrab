@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -33,9 +34,11 @@ func main() {
 	fmt.Println("ghrelgrab version:", Version)
 
 	repo := flag.String("repo", "", "owner/repo for GitHub project (required)")
-	version := flag.String("version", "", "release tag, e.g. v1.2.3 (required)")
+	version := flag.String("version", "", "release tag, e.g. v1.2.3 (mutually exclusive with --latest)")
+	latest := flag.Bool("latest", false, "use the latest non-pre-release version from the GitHub API (mutually exclusive with --version)")
 	filePattern := flag.String("file", "", "asset filename with {version} and/or {arch} tokens (required)")
 	outDir := flag.String("out", ".", "output directory (will be created if missing)")
+	name := flag.String("name", "", "override the output filename of the downloaded binary")
 	debug := flag.Bool("debug", false, "enable debug output")
 
 	// Operating System
@@ -51,15 +54,37 @@ func main() {
 
 	flag.Parse()
 
-	if *repo == "" || *version == "" || *filePattern == "" {
-		fmt.Fprintln(os.Stderr, "--repo, --version, and --file are required")
+	if *repo == "" {
+		fmt.Fprintln(os.Stderr, "--repo is required")
 		os.Exit(2)
+	}
+	if *latest && *version != "" {
+		fmt.Fprintln(os.Stderr, "--version and --latest are mutually exclusive")
+		os.Exit(2)
+	}
+	if !*latest && *version == "" {
+		fmt.Fprintln(os.Stderr, "--version is required (or use --latest)")
+		os.Exit(2)
+	}
+	if *filePattern == "" {
+		fmt.Fprintln(os.Stderr, "--file is required")
+		os.Exit(2)
+	}
+
+	// Resolve the version: either use the provided flag or fetch the latest from GitHub
+	resolvedVersion := *version
+	if *latest {
+		var err error
+		resolvedVersion, err = fetchLatestVersion(*repo, *token)
+		if err != nil {
+			fatalf("fetch latest version: %v", err)
+		}
 	}
 
 	// Print out the repo
 	if *debug {
 		fmt.Println("Repo:", *repo)
-		fmt.Println("Version:", *version)
+		fmt.Println("Version:", resolvedVersion)
 		fmt.Println("OS:", *osFlag)
 		fmt.Println("Architecture:", *arch)
 	}
@@ -87,11 +112,11 @@ func main() {
 	}
 
 	// Build final filename and URL
-	filename := strings.ReplaceAll(*filePattern, "{version}", *version)
+	filename := strings.ReplaceAll(*filePattern, "{version}", resolvedVersion)
 	filename = strings.ReplaceAll(filename, "{os}", osSub)
 	filename = strings.ReplaceAll(filename, "{arch}", archSub)
 
-	downloadURL := "https://github.com/" + *repo + "/releases/download/" + *version + "/" + filename
+	downloadURL := "https://github.com/" + *repo + "/releases/download/" + resolvedVersion + "/" + filename
 
 	if *debug {
 		fmt.Println("Download URL:", downloadURL)
@@ -124,7 +149,11 @@ func main() {
 		}
 		produced, err = extractZip(tmp, *outDir)
 	default:
-		dst := filepath.Join(*outDir, filepath.Base(filename))
+		baseName := filepath.Base(filename)
+		if *name != "" {
+			baseName = *name
+		}
+		dst := filepath.Join(*outDir, baseName)
 		err = copyFile(tmp, dst, 0o644)
 		if err == nil {
 			produced = []string{dst}
@@ -132,6 +161,15 @@ func main() {
 	}
 	if err != nil {
 		fatalf("extract: %v", err)
+	}
+
+	// When --name is set and an archive was unpacked, find the target binary and rename it
+	if *name != "" && (strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") || strings.HasSuffix(lower, ".zip")) {
+		var renameErr error
+		produced, renameErr = findAndRename(produced, *outDir, *name)
+		if renameErr != nil {
+			fatalf("rename: %v", renameErr)
+		}
 	}
 
 	// Print resulting file paths to stdout (one per line)
@@ -163,6 +201,121 @@ func parseSubstMap(s string) map[string]string {
 		}
 	}
 	return out
+}
+
+// fetchLatestVersion queries the GitHub API for the latest non-pre-release,
+// non-draft release and returns its tag name.
+func fetchLatestVersion(repo, token string) (string, error) {
+	url := "https://api.github.com/repos/" + repo + "/releases/latest"
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "ghrelgrab")
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+	}
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", fmt.Errorf("parse response: %w", err)
+	}
+	if release.TagName == "" {
+		return "", fmt.Errorf("no tag_name in response")
+	}
+	return release.TagName, nil
+}
+
+// findAndRename locates the appropriate binary among the extracted files and
+// renames it to name inside outDir. The selection priority is:
+//  1. A file whose base name already matches name exactly.
+//  2. The sole executable file (mode & 0o111 != 0).
+//  3. Among multiple executables, the one whose name most closely matches name.
+//  4. The first regular file as a last resort.
+func findAndRename(files []string, outDir, name string) ([]string, error) {
+	targetPath := filepath.Join(outDir, name)
+
+	// Pass 1: exact base name match
+	for i, f := range files {
+		if filepath.Base(f) == name {
+			if f != targetPath {
+				if err := os.Rename(f, targetPath); err != nil {
+					return nil, err
+				}
+				files[i] = targetPath
+			}
+			return files, nil
+		}
+	}
+
+	// Pass 2: collect executables
+	var execIdxs []int
+	for i, f := range files {
+		info, err := os.Stat(f)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if info.Mode()&0o111 != 0 {
+			execIdxs = append(execIdxs, i)
+		}
+	}
+
+	pickIdx := -1
+	switch len(execIdxs) {
+	case 1:
+		pickIdx = execIdxs[0]
+	default:
+		nameLower := strings.ToLower(name)
+		for _, i := range execIdxs {
+			base := strings.ToLower(filepath.Base(files[i]))
+			if strings.Contains(base, nameLower) || strings.Contains(nameLower, base) {
+				pickIdx = i
+				break
+			}
+		}
+		if pickIdx == -1 && len(execIdxs) > 0 {
+			pickIdx = execIdxs[0]
+		}
+	}
+
+	if pickIdx >= 0 {
+		if files[pickIdx] != targetPath {
+			if err := os.Rename(files[pickIdx], targetPath); err != nil {
+				return nil, err
+			}
+			files[pickIdx] = targetPath
+		}
+		return files, nil
+	}
+
+	// Pass 3: fall back to first regular file
+	for i, f := range files {
+		info, err := os.Stat(f)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if f != targetPath {
+			if err := os.Rename(f, targetPath); err != nil {
+				return nil, err
+			}
+			files[i] = targetPath
+		}
+		return files, nil
+	}
+
+	return files, fmt.Errorf("no regular file found to rename to %q", name)
 }
 
 func fetch(url, token string) (string, error) {
@@ -201,9 +354,19 @@ func extractZip(zipPath, outDir string) ([]string, error) {
 		return nil, err
 	}
 	defer r.Close()
+	absOutDir, err := filepath.Abs(outDir)
+	if err != nil {
+		return nil, err
+	}
 	var produced []string
 	for _, f := range r.File {
-		fp := filepath.Join(outDir, f.Name)
+		fp, err := filepath.Abs(filepath.Join(outDir, f.Name))
+		if err != nil {
+			return nil, err
+		}
+		if !strings.HasPrefix(fp, absOutDir+string(filepath.Separator)) {
+			return nil, fmt.Errorf("illegal file path in archive: %s", f.Name)
+		}
 		if f.FileInfo().IsDir() {
 			if err := os.MkdirAll(fp, 0o755); err != nil {
 				return nil, err
@@ -245,6 +408,10 @@ func extractTarGz(gzPath, outDir string) ([]string, error) {
 		return nil, err
 	}
 	defer gz.Close()
+	absOutDir, err := filepath.Abs(outDir)
+	if err != nil {
+		return nil, err
+	}
 	tr := tar.NewReader(gz)
 	var produced []string
 	for {
@@ -255,7 +422,13 @@ func extractTarGz(gzPath, outDir string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		fp := filepath.Join(outDir, hdr.Name)
+		fp, err := filepath.Abs(filepath.Join(outDir, hdr.Name))
+		if err != nil {
+			return nil, err
+		}
+		if !strings.HasPrefix(fp, absOutDir+string(filepath.Separator)) {
+			return nil, fmt.Errorf("illegal file path in archive: %s", hdr.Name)
+		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(fp, 0o755); err != nil {
