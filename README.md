@@ -6,6 +6,8 @@ Fetches and extracts a specified version of a GitHub release asset from a chosen
 
 ## Usage
 
+Download a specific release:
+
 ```bash
 ghrelgrab \
   --repo owner/repo \
@@ -13,18 +15,32 @@ ghrelgrab \
   --file "asset-{version}-{os}-{arch}.tar.gz"
 ```
 
+Download the latest non-pre-release release and rename the extracted binary:
+
+```bash
+ghrelgrab \
+  --repo owner/repo \
+  --latest \
+  --file "asset-{version}-{os}-{arch}.tar.gz" \
+  --name asset
+```
+
 Supported flags:
 
 - `--repo` (required): GitHub `owner/repo` (e.g. `owner/repo`)
-- `--version` (required): Release tag (e.g. `v1.2.3`)
+- `--version`: Release tag (e.g. `v1.2.3`); mutually exclusive with `--latest`
+- `--latest`: Resolve the latest non-pre-release, non-draft release tag from the GitHub API; mutually exclusive with `--version`
 - `--file` (required): Asset filename, supports `{version}`, `{os}`, and `{arch}` tokens
 - `--out`: Output directory (default: current directory)
+- `--name`: Override the output filename; for archives, rename the extracted target file in the output directory
 - `--os`: Override detected OS for `{os}` substitution (default: current OS)
 - `--os-map`: Remap detected OS before substitution (e.g. `linux=ubuntu,windows=win32`)
 - `--arch`: Override detected architecture for `{arch}` substitution (default: current arch)
 - `--arch-map`: Remap detected arch before substitution (e.g. `amd64=x86_64,arm64=aarch64`)
 - `--token`: GitHub token (defaults to `GH_TOKEN` env) for private assets
 - `--debug`: Enable debug output
+
+Use either `--version` or `--latest`. When `--latest` is used, `{version}` is substituted with the resolved release tag.
 
 The tool automatically extracts `.tar.gz`, `.tgz`, and `.zip` archives. Other files are saved as-is. Output file paths are printed to stdout.
 
