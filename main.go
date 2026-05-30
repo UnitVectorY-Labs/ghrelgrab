@@ -184,8 +184,8 @@ func parseSubstMap(s string) map[string]string {
 	if s == "" {
 		return out
 	}
-	parts := strings.Split(s, ",")
-	for _, p := range parts {
+	parts := strings.SplitSeq(s, ",")
+	for p := range parts {
 		p = strings.TrimSpace(p)
 		if p == "" {
 			continue
