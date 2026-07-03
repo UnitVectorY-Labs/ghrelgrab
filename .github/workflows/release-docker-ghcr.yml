@@ -4,14 +4,26 @@ on:
   release:
     types: [published]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
-    concurrency:
-      group: docker
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
 
     permissions:
+      artifact-metadata: write
       id-token: write
       contents: read
       attestations: write
@@ -22,10 +34,10 @@ jobs:
       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       with:
         persist-credentials: false
-    
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-    
+
     - name: Login to GitHub Container Registry
       uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
       with:
@@ -37,28 +49,97 @@ jobs:
       run: |
         echo "REPO_LC=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
-    - name: Extract release version
+    - name: Extract arch-specific tags
       id: meta
       uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
       with:
         images: ghcr.io/${{ env.REPO_LC }}
+        flavor: |
+          suffix=-${{ matrix.arch }},onlatest=true
         tags: |
-          type=sha
           type=semver,pattern=v{{version}}
           type=semver,pattern=v{{major}}.{{minor}}
           type=semver,pattern=v{{major}}
 
-    - name: Build and push Docker image
+    - name: Build and push Docker image (single arch)
       id: push
       uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
       with:
         context: .
         push: true
-        platforms: linux/amd64,linux/arm64
+        platforms: linux/${{ matrix.arch }}
         tags: ${{ steps.meta.outputs.tags }}
+        build-args: |
+          VERSION=${{ github.ref_name }}
+
+    - name: Generate artifact attestation (${{ matrix.arch }})
+      uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+      with:
+        subject-name: ghcr.io/${{ env.REPO_LC }}
+        subject-digest: ${{ steps.push.outputs.digest }}
+        push-to-registry: true
+
+  manifest:
+    needs: build-and-push
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    permissions:
+      artifact-metadata: write
+      id-token: write
+      contents: read
+      attestations: write
+      packages: write
+
+    steps:
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set lowercase repository name
+      run: |
+        echo "REPO_LC=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+
+    - name: Extract multi-arch tags
+      id: meta
+      uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+      with:
+        images: ghcr.io/${{ env.REPO_LC }}
+        tags: |
+          type=semver,pattern=v{{version}}
+          type=semver,pattern=v{{major}}.{{minor}}
+          type=semver,pattern=v{{major}}
+
+    - name: Create and push multi-arch manifest
+      id: push
+      shell: bash
+      env:
+        TAGS: ${{ steps.meta.outputs.tags }}
+        META_VERSION: ${{ steps.meta.outputs.version }}
+      run: |
+        IMAGE="ghcr.io/${REPO_LC}"
+
+        TAG_ARGS=""
+        while IFS= read -r tag; do
+          [ -n "${tag}" ] && TAG_ARGS="${TAG_ARGS} -t ${tag}"
+        done <<< "${TAGS}"
+
+        docker buildx imagetools create \
+          ${TAG_ARGS} \
+          "${IMAGE}:${META_VERSION}-amd64" \
+          "${IMAGE}:${META_VERSION}-arm64"
+
+        DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${META_VERSION}" --format '{{json .Manifest.Digest}}' | jq -r '.')
+        echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
 
     - name: Generate artifact attestation
-      uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+      uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
       with:
         subject-name: ghcr.io/${{ env.REPO_LC }}
         subject-digest: ${{ steps.push.outputs.digest }}

@@ -18,13 +18,19 @@ COPY . .
 ENV CGO_ENABLED=0
 
 # Build the Go server with version injection
-RUN go build -mod=readonly -o ghrelgrab -ldflags "-X 'main.Version=${VERSION}'" .
+RUN go build -mod=readonly -o server -ldflags "-X 'main.Version=${VERSION}'" .
 
 # Use a minimal base image for running the compiled binary
 FROM gcr.io/distroless/base-debian13
 
 # Copy the built server binary into the runtime container
-COPY --from=builder /app/ghrelgrab /ghrelgrab
+COPY --from=builder /app/server /server
+
+# Expose the port that the server will listen on
+EXPOSE 8080
 
 # Run as non-root user
 USER 65532:65532
+
+# Run the server binary
+CMD ["/server"]

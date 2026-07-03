@@ -1,0 +1,12 @@
+name: ghrelgrab
+default_branch: main
+config:
+  description: "Fetches and extracts a specified version of a GitHub release asset from a chosen repository for the current or mapped system architecture."
+  license: MIT
+  language: go
+  release: docker-go
+  justfile: false
+  release_github: true
+  status: active
+  codecov:
+    enabled: false
