@@ -4,7 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
@@ -229,7 +229,7 @@ func fetchLatestVersion(repo, token string) (string, error) {
 	var release struct {
 		TagName string `json:"tag_name"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &release); err != nil {
 		return "", fmt.Errorf("parse response: %w", err)
 	}
 	if release.TagName == "" {
